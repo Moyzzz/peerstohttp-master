@@ -1,0 +1,38 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, build with `go test -c`
+*.test
+
+# Output of the go coverage tool, specifically when used with LiteIDE
+*.out
+
+*.db
+
+# ---- build / run artifacts ----
+*.log
+/peerstohttp
+/app.bolt.db
+/.app.bolt.db
+/downloads/
+/bt-data/
+__debug_bin*
+
+# ---- CGO / GCC intermediate files (should never land here) ----
+*.o
+*.a
+*.obj
+*.lib
+*.pdb
+*.ilk
+*.exp
+
+# ---- local tooling data (IDE / AI agent plans, not part of the project) ----
+/.codebuddy/
+
+# ---- CI: upstream Docker Hub publishing workflow, needs secrets we do not have ----
+/.github/workflows/docker-publish.yml

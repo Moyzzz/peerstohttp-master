@@ -1,0 +1,35 @@
+services:
+  peerstohttp:
+    container_name: peerstohttp
+
+    # 二选一：
+    # 1) 用官方镜像（最快）
+    image: winpooh32/peerstohttp:latest
+    # 2) 从本仓库构建（会带上 vendor/ 里的编译补丁）
+    # build: .
+
+    # 容器内默认端口 80，这里显式写出便于修改
+    command:
+      - "-port=80"
+      - "-port-torr=6881"
+      - "-dir=/downloads"
+      - "-cache-capacity=2048"
+      # 需要时再打开：
+      # - "-no-dht"
+      # - "-no-upnp"
+      # - "-down-rate=1024"
+      # - "-torr-debug"
+      # - "-profile"
+
+    ports:
+      - "8484:80"          # HTTP：宿主机 8484 -> 容器 80
+      - "6881:6881/tcp"    # BitTorrent TCP
+      - "6881:6881/udp"    # BitTorrent UDP
+
+    volumes:
+      - peerstohttp-data:/downloads
+
+    restart: unless-stopped
+
+volumes:
+  peerstohttp-data:
