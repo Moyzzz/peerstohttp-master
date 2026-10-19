@@ -9,6 +9,22 @@ Built top on [anacrolix/torrent](https://github.com/anacrolix/torrent) lib.
 
 > **本地部署与启动说明见 [DEPLOY.md](DEPLOY.md)**：覆盖 Windows / Linux / Docker Compose 三种方式，含编译依赖、启动参数、验证清单与常见问题排查。
 
+> **本项目是 [WinPooh32/peerstohttp](https://github.com/WinPooh32/peerstohttp) 的非官方衍生版本（unofficial derivative）**
+>
+> 原始项目版权归原作者所有，按 [GNU GPL v3.0](LICENSE) 授权发布。本仓库在上游基础上修复了新版工具链下的编译问题，并补充了部署文档与启动脚本；本仓库的修改部分同样以 GPL-3.0 发布，完整条款见 [LICENSE](LICENSE)。
+>
+> *This is an unofficial derivative of the upstream project. Original copyright belongs to its authors; this fork and its modifications are released under GPL-3.0 as well.*
+
+与上游相比的主要改动：
+
+| 类别 | 内容 |
+|---|---|
+| 编译兼容 | `vendor/github.com/anacrolix/go-libutp/utp_types.h`：用 `__STDC_VERSION__ < 202311L` 条件编译包裹 `typedef uint8 bool;`，兼容 GCC 15+（默认 `-std=gnu23` 下 `bool` 成为关键字） |
+| 编译兼容 | `vendor/github.com/anacrolix/go-libutp/` 下的 `callbacks.go`、`utp.go`、`socket.go`：把 7 个定义在 cgo 类型别名上的方法改为普通函数，兼容 Go 1.21+ |
+| 文档 | 新增 `DEPLOY.md`：Windows / Linux / Docker 部署手册，含参数速查、验证清单、错误对照表，第 10 章为依赖补丁附录 |
+| 脚本 | 新增 `start.ps1`：Windows 启动脚本，从 `-MingwBin`、`PEERSTOHTTP_MINGW_BIN`、PATH 上的 `gcc`、`CC`、`MSYS2_ROOT` 探测工具链，不再写死路径 |
+| 配置 | 修正 `docker-compose.yml`：镜像名改为小写、去掉 `network_mode: host` 改为端口映射、增加命名卷 |
+
 ## HTTP API
 
 ##### URL Parameters
@@ -131,5 +147,13 @@ go run github.com/WinPooh32/peerstohttp/cmd -port=8484 -dir="/path/to/download"
 * Default `dir` value is system tmp folder, for listing all possible options run `$ ./peerstohttp -help`.
 
 ## License
+
+本仓库以 **GNU General Public License v3.0** 发布，完整条款见 [LICENSE](LICENSE)。
+
+- **原始项目**：[WinPooh32/peerstohttp](https://github.com/WinPooh32/peerstohttp)，版权归原作者所有
+- **本仓库**：上游的非官方衍生版本；对上游的修改（vendor 编译补丁、`DEPLOY.md`、`start.ps1`、`docker-compose.yml`）同样以 GPL-3.0 发布
+- **同步**：本仓库不保证与上游保持同步
+
+下方徽章反映的是**上游项目**的 FOSSA 扫描状态，不代表本仓库：
 
 [![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2FWinPooh32%2Fpeerstohttp.svg?type=large)](https://app.fossa.io/projects/git%2Bgithub.com%2FWinPooh32%2Fpeerstohttp?ref=badge_large)
