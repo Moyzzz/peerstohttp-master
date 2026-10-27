@@ -1,0 +1,127 @@
+# ============================================================================
+# peerstohttp 公网加固版编排
+#
+# 与 docker-compose.yml（本地版）的区别：
+#   1. peerstohttp 的 HTTP 端口不再映射到宿主机，只能被同网络的 Caddy 访问
+#      —— 这是最关键的一条：8484 在公网上根本不存在
+#   2. 唯一对外入口是 Caddy 的 80/443，带自动 HTTPS + Basic Auth + 限流
+#   3. 容器降权：cap_drop ALL / no-new-privileges / 只读根文件系统
+#   4. 下载缓存设上限，避免被人刷爆磁盘
+#
+# 启动：
+#   docker compose -f docker-compose.public.yml up -d --build
+# 状态 / 日志：
+#   docker compose -f docker-compose.public.yml ps
+#   docker compose -f docker-compose.public.yml logs -f caddy
+# ============================================================================
+
+services:
+  peerstohttp:
+    container_name: peerstohttp
+    image: peerstohttp:hardened
+
+    # 想跳过编译、直接用上游现成镜像的话，把 build 整段注释掉、启用下面这行：
+    # image: winpooh32/peerstohttp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    # 端口在容器内固定 8484：既避免以 root 身份绑定 80，
+    # 也让 cap_drop: ALL 不会因 NET_BIND_SERVICE 而失败。
+    command:
+      - "-host=0.0.0.0"
+      - "-port=8484"
+      - "-port-torr=6881"
+      - "-dir=/downloads"
+      # 缓存上限 5GiB，超出按 LRU 淘汰。公网环境必须设，否则磁盘无上限增长
+      - "-cache-capacity=5120"
+      - "-max-connections=50"
+      # 全局限速（单位 KiB/s）：下载 64Mbps，上传 4Mbps
+      - "-down-rate=8192"
+      - "-up-rate=512"
+      # 端口映射是手工写的，UPnP 在容器里没有意义
+      - "-no-upnp"
+      # 绝对不要加 -profile：它会挂出 /debug/pprof，能 dump 堆内存
+
+    # 仅在同网络内可达，不映射到宿主机
+    expose:
+      - "8484"
+
+    # BT 端口需要对外发布，否则只能靠出站连接，找 peer 能力大幅下降。
+    # 如果你的云厂商明确禁止 P2P，删掉这一段也能用，只是会慢。
+    ports:
+      - "6881:6881/tcp"
+      - "6881:6881/udp"
+
+    volumes:
+      - peerstohttp-data:/downloads
+
+    restart: unless-stopped
+    networks:
+      - internal
+
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    # 根文件系统只读，只留 /downloads 卷和 /tmp 可写。
+    # 若容器起不来且日志报 read-only file system，先删掉这一行排查。
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+
+    # BT 并发连接多，文件句柄要给足
+    ulimits:
+      nofile:
+        soft: 65535
+        hard: 65535
+
+    # 防止日志把宿主磁盘写满
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  caddy:
+    container_name: peerstohttp-caddy
+    image: peerstohttp-caddy:2.11.7
+    build:
+      context: .
+      dockerfile: Caddy.Dockerfile
+
+    ports:
+      - "80:80"          # ACME 校验 + HTTP->HTTPS 跳转
+      - "443:443"        # HTTPS
+      - "443:443/udp"    # HTTP/3
+
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # 证书必须持久化，否则每次重建容器都要重新申请，会撞 Let's Encrypt 频率限制
+      - caddy-data:/data
+      - caddy-config:/config
+
+    restart: unless-stopped
+    networks:
+      - internal
+
+    security_opt:
+      - no-new-privileges:true
+
+    depends_on:
+      - peerstohttp
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  peerstohttp-data:
+  caddy-data:
+  caddy-config:

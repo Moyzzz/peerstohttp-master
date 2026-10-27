@@ -1,0 +1,98 @@
+# ==============================================================================
+# peerstohttp systemd 单元
+#
+# 放置位置：/etc/systemd/system/peerstohttp.service
+#
+# ------------------------------------------------------------------------------
+# 一次性准备
+# ------------------------------------------------------------------------------
+#   # 1) 专用系统用户（不能登录，不建家目录）
+#   sudo useradd --system --no-create-home --shell /usr/sbin/nologin peerstohttp
+#
+#   # 2) 运行库（二进制动态链接 C++ 运行库，缺了会启动即失败）
+#   sudo apt install -y libstdc++6
+#
+#   # 3) 目录
+#   sudo mkdir -p /opt/peerstohttp /var/lib/peerstohttp
+#   sudo chown root:root /opt/peerstohttp
+#   sudo chmod 755 /opt/peerstohttp
+#   sudo chown -R peerstohttp:peerstohttp /var/lib/peerstohttp
+#   sudo chmod 750 /var/lib/peerstohttp
+#
+#   # 4) 放二进制（在仓库根目录编译：CGO_ENABLED=1 go build -mod=vendor -o peerstohttp ./cmd）
+#   sudo cp peerstohttp /opt/peerstohttp/
+#   sudo chmod 755 /opt/peerstohttp/peerstohttp
+#
+# ------------------------------------------------------------------------------
+# 安装与启停
+# ------------------------------------------------------------------------------
+#   sudo cp deploy/systemd/peerstohttp.service /etc/systemd/system/
+#   sudo systemd-analyze verify /etc/systemd/system/peerstohttp.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now peerstohttp
+#   systemctl status peerstohttp
+#   sudo journalctl -u peerstohttp -f
+#
+#   停止：sudo systemctl stop peerstohttp
+#   改参数：编辑本文件后 daemon-reload + restart
+#
+# ------------------------------------------------------------------------------
+# 参数说明（每一项都对应一个公网风险）
+# ------------------------------------------------------------------------------
+#   -host=127.0.0.1   只监听回环，公网无法直接访问 8484，必须经过 nginx
+#                     （源码默认是 0.0.0.0，这是最容易踩的坑）
+#   -port=8484        HTTP 端口，与 nginx 里 proxy_pass 保持一致
+#   -port-torr=6881   BT 监听端口，固定值便于防火墙和安全组放行
+#   -dir 必须显式指定：留空会用系统临时目录，且进程退出时整个删掉
+#   -cache-capacity   缓存总量上限（MiB），超出按 LRU 淘汰旧文件；
+#                     设为 0 会变成永不过期，公网上迟早被写满磁盘
+#   -up-rate          上传限速（KiB/s），程序默认开做种，不限速会吃满上行
+#   -no-upnp          端口是手工映射的，容器/服务器里 UPnP 没有意义
+#
+#   绝对不要加 -profile：它会挂出 /debug/pprof，可 dump 堆内存
+# ==============================================================================
+
+[Unit]
+Description=peerstohttp - BitTorrent to HTTP gateway
+Documentation=https://github.com/WinPooh32/peerstohttp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=peerstohttp
+Group=peerstohttp
+WorkingDirectory=/opt/peerstohttp
+
+# 单行写完，避免续行符与 CRLF 混用导致 systemd 解析失败
+ExecStart=/opt/peerstohttp/peerstohttp -host=127.0.0.1 -port=8484 -port-torr=6881 -dir=/var/lib/peerstohttp -cache-capacity=5120 -max-connections=50 -down-rate=8192 -up-rate=512 -no-upnp
+
+Restart=on-failure
+RestartSec=5s
+
+# 每个种子最多 50 条 peer 连接，句柄要给够
+LimitNOFILE=65535
+
+# ------------------------------------------------------------------------------
+# 加固
+# 注意：刻意不加 MemoryDenyWriteExecute 和 SystemCallFilter，
+#      本项目依赖 cgo（go-libutp）且 Go 运行时会自建内存映射，
+#      这两项容易导致启动即崩溃。
+# ------------------------------------------------------------------------------
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/peerstohttp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictSUIDSGID=true
+# 必须带上 AF_NETLINK：Go 运行时会用它枚举网卡，缺了会启动失败
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+
+[Install]
+WantedBy=multi-user.target
