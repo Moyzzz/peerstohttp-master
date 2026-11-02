@@ -1,19 +1,16 @@
 package app
 
-// 本文件实现 /content 路径的种子生命周期管理：引用计数 + 两段式回收。
+// 本文件实现种子的生命周期管理：引用计数 + 两段式回收。
+//
+// 注册表是创建种子的唯一入口：/content 与 /list 都通过 Acquire / AcquireMagnet 取种子，
+// 用完必须调用 release；启动时不再预加载历史种子（见 App.load）。
 //
 // 两段式回收：
 //  1. 最后一个请求结束（refs 归零）时，先把该种子的最大连接数置零，
 //     立即断开全部 peer 连接、释放连接缓冲，但保留种子对象与分片状态；
 //  2. 宽限期（-idle-ttl，默认 90 秒）内没有新请求命中，才真正 Drop()
-//     把种子从 client 与本地索引中移除，释放按分片数计算的元数据。
+//     把种子从 client 中移除，释放按分片数计算的元数据。
 //     数据库中的 metainfo 默认保留（-keep-meta=true），以便再次访问时秒出 info。
-//
-// 已知遗留（本次改造范围之外）：
-//   - /list 路径（TrackHashContext / TrackMagnetContext）仍然只增不删；
-//   - load() 启动时仍会把数据库里的历史种子全量 AddTorrent，它们不经过本注册表。
-//
-// 因此两段式回收只覆盖"由 /content 触发"的种子。
 
 import (
 	"bytes"
@@ -48,11 +45,36 @@ type trackedTorrent struct {
 	err error
 }
 
-// Acquire 取得一个可用的种子并使其引用计数加一。调用方必须调用返回的 release。
+// Acquire 按 infoHash 取得种子并使其引用计数加一。调用方必须调用返回的 release。
+func (app *App) Acquire(ctx context.Context, hash metainfo.Hash) (*torrent.Torrent, func(), error) {
+	return app.acquire(ctx, hash, func() (*torrent.Torrent, bool, error) {
+		t, isNew := app.client.AddTorrentInfoHash(hash)
+		return t, isNew, nil
+	})
+}
+
+// AcquireMagnet 按 magnet 取得种子并使其引用计数加一。
+// 首次创建时会带上 magnet 里的 trackers / display name / web seeds / peer addrs。
+func (app *App) AcquireMagnet(ctx context.Context, m *metainfo.Magnet) (*torrent.Torrent, func(), error) {
+	return app.acquire(ctx, m.InfoHash, func() (*torrent.Torrent, bool, error) {
+		spec, err := torrent.TorrentSpecFromMagnetUri(m.String())
+		if err != nil {
+			return nil, false, err
+		}
+
+		return app.client.AddTorrentSpec(spec)
+	})
+}
+
+// acquire 是 /content 与 /list 的公共实现：命中的话只加引用，未命中则由 apply 创建一次。
 //
 // 同一个 infoHash 的并发或连续请求共享同一个 *torrent.Torrent：
 // release 只做减计数，真正断开与移除由两段式回收负责。
-func (app *App) Acquire(ctx context.Context, hash metainfo.Hash) (*torrent.Torrent, func(), error) {
+func (app *App) acquire(
+	ctx context.Context,
+	hash metainfo.Hash,
+	apply func() (*torrent.Torrent, bool, error),
+) (*torrent.Torrent, func(), error) {
 	app.mu.Lock()
 
 	if e, ok := app.active[hash]; ok {
@@ -97,7 +119,7 @@ func (app *App) Acquire(ctx context.Context, hash metainfo.Hash) (*torrent.Torre
 	app.active[hash] = e
 	app.mu.Unlock()
 
-	t, err := app.createTorrent(ctx, hash)
+	t, err := app.createTorrent(ctx, hash, apply)
 
 	app.mu.Lock()
 	if err != nil {
@@ -163,7 +185,6 @@ func (app *App) drop(hash metainfo.Hash) {
 	}
 
 	delete(app.active, hash)
-	delete(app.torrents, hash.String())
 
 	// 持锁 Drop：避免"新请求刚拿到指针、旧 goroutine 正在 Drop"的悬垂对象。
 	// 锁顺序始终为 app.mu -> torrent client 内部锁。
@@ -190,10 +211,23 @@ func (app *App) drop(hash metainfo.Hash) {
 
 // createTorrent 负责 Add + 注入缓存的 metainfo + 带超时等待 info + 落库。
 // 全程不持有 app.mu，因为等待元数据可能阻塞数秒。
-func (app *App) createTorrent(ctx context.Context, hash metainfo.Hash) (*torrent.Torrent, error) {
-	t, isNew := app.client.AddTorrentInfoHash(hash)
+// apply 由调用方提供（按 hash 或按 magnet），只在真正创建时执行一次。
+func (app *App) createTorrent(
+	ctx context.Context,
+	hash metainfo.Hash,
+	apply func() (*torrent.Torrent, bool, error),
+) (*torrent.Torrent, error) {
+	t, isNew, err := apply()
+	if err != nil {
+		return nil, fmt.Errorf("torrent: add %s: %w", hash.HexString(), err)
+	}
+
 	if t == nil {
 		return nil, fmt.Errorf("torrent: add %s returned nil", hash.HexString())
+	}
+
+	if isNew {
+		log.Info().Str("hash", hash.HexString()).Msg("torrent created")
 	}
 
 	// 数据库里有 metainfo 就直接注入，省掉一次 metadata 交换。

@@ -2,7 +2,6 @@ package app
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"io/ioutil"
 	"os"
@@ -33,9 +32,7 @@ var trackers = [][]string{
 type App struct {
 	client *torrent.Client
 
-	// torrents 是按 infoHash 字符串索引的种子视图（/list 路径与启动加载会写入）。
-	torrents map[string]*torrent.Torrent
-	// active 是 /content 路径的引用计数注册表，负责两段式回收。
+	// active 是种子注册表（/content 与 /list 共用），负责引用计数与两段式回收。
 	active map[metainfo.Hash]*trackedTorrent
 	mu     sync.RWMutex
 
@@ -90,7 +87,6 @@ func New(service *settings.Settings) (*App, error) {
 	}
 
 	var app = &App{
-		torrents:    map[string]*torrent.Torrent{},
 		active:      map[metainfo.Hash]*trackedTorrent{},
 		client:      client,
 		db:          store,
@@ -117,95 +113,28 @@ func New(service *settings.Settings) (*App, error) {
 	return app, nil
 }
 
+// load 只做一次元数据缓存体检，不再把历史种子全部 AddTorrent。
+// 种子改为按需创建：/content 或 /list 命中时由注册表 AddTorrent 并从缓存注入 metainfo。
 func (app *App) load() error {
-	sema := make(chan struct{}, 32)
-
 	return app.db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(dbBucketInfo))
-
-		return b.ForEach(func(_, v []byte) error {
-			var err error
-			var mi *metainfo.MetaInfo
-			var t *torrent.Torrent
-
-			mi, err = metainfo.Load(bytes.NewReader(v))
-			if err != nil {
-				log.Warn().Msgf("read meta info: %s", err)
-				return nil
-			}
-
-			sema <- struct{}{}
-
-			go func() {
-				defer func() { <-sema }()
-
-				t, err = app.client.AddTorrent(mi)
-				if err != nil {
-					log.Warn().Msgf("add torrent: %s", err)
-				}
-
-				t.AddTrackers(trackers)
-
-				app.mu.Lock()
-				app.torrents[t.InfoHash().String()] = t
-				app.mu.Unlock()
-			}()
-
+		if b == nil {
 			return nil
-		})
+		}
+
+		st := b.Stats()
+
+		log.Info().
+			Int("cached_metainfo", st.KeyN).
+			Int("cache_bytes", st.LeafAlloc).
+			Msg("metainfo cache ready (lazy mode: nothing added to client)")
+
+		return nil
 	})
 }
 
 func (app *App) Client() *torrent.Client {
 	return app.client
-}
-
-func (app *App) Track(t *torrent.Torrent) (*torrent.Torrent, error) {
-	return app.TrackContext(context.Background(), t)
-}
-
-func (app *App) TrackHash(hash metainfo.Hash) (*torrent.Torrent, error) {
-	return app.TrackHashContext(context.Background(), hash)
-}
-
-func (app *App) TrackMagnet(magnet *metainfo.Magnet) (*torrent.Torrent, error) {
-	return app.TrackMagnetContext(context.Background(), magnet)
-}
-
-func (app *App) TrackContext(ctx context.Context, t *torrent.Torrent) (*torrent.Torrent, error) {
-	return t, app.trackContext(ctx, t)
-}
-
-func (app *App) TrackHashContext(ctx context.Context, hash metainfo.Hash) (*torrent.Torrent, error) {
-	var t, _ = app.client.AddTorrentInfoHash(hash)
-
-	if t == nil {
-		return nil, fmt.Errorf("torrent is nil")
-	}
-
-	return t, app.trackContext(ctx, t)
-}
-
-func (app *App) TrackMagnetContext(ctx context.Context, magnet *metainfo.Magnet) (*torrent.Torrent, error) {
-	var err error
-	var t *torrent.Torrent
-
-	t, err = app.client.AddMagnet(magnet.String())
-	if err != nil {
-		return nil, fmt.Errorf("torrent add magnet: %w", err)
-	}
-
-	t.AddTrackers(trackers)
-
-	return t, app.trackContext(ctx, t)
-}
-
-func (app *App) Torrent(hash string) (*torrent.Torrent, bool) {
-	app.mu.RLock()
-	defer app.mu.RUnlock()
-
-	t, ok := app.torrents[hash]
-	return t, ok
 }
 
 func (app *App) Close() error {
@@ -237,10 +166,6 @@ func (app *App) track(t *torrent.Torrent) error {
 
 	t.AddTrackers(trackers)
 
-	app.mu.Lock()
-	app.torrents[t.InfoHash().String()] = t
-	app.mu.Unlock()
-
 	return nil
 }
 
@@ -259,23 +184,6 @@ func (app *App) persist(t *torrent.Torrent) error {
 		return b.Put(t.InfoHash().Bytes(), buf.Bytes())
 	}); err != nil {
 		return fmt.Errorf("put to db: %w", err)
-	}
-
-	return nil
-}
-
-func (app *App) trackContext(ctx context.Context, t *torrent.Torrent) error {
-
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-
-	case <-t.GotInfo():
-	}
-
-	var err = app.track(t)
-	if err != nil {
-		return fmt.Errorf("track torrent: %w", err)
 	}
 
 	return nil

@@ -55,17 +55,35 @@ func RouteApp(r chi.Router, app *app.App) {
 	r.With(hash, path).Get("/content/{"+paramHash+"}/*", h.content)
 }
 
+// writeAcquireError 把注册表返回的错误映射成 HTTP 状态码。
+// /content 与 /list 共用同一套语义：超时 504，其余 404，客户端取消时不写响应。
+func writeAcquireError(w http.ResponseWriter, hash metainfo.Hash, err error) {
+	switch {
+	case errors.Is(err, app.ErrInfoTimeout):
+		log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
+		http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
+
+	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		// 客户端已经离开，无需再写响应。
+		log.Debug().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
+
+	default:
+		log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+	}
+}
+
 func (h *handle) hash(w http.ResponseWriter, r *http.Request) {
-	var hash = r.Context().Value(paramHash).(string)
+	var hash = metainfo.NewHashFromHex(r.Context().Value(paramHash).(string))
 	var whitelist = r.Context().Value(paramWhitelist).(map[string]struct{})
 	var ignoretags = r.Context().Value(paramIgnoretags).(map[string]struct{})
 
-	var t, err = h.app.TrackHashContext(r.Context(), metainfo.NewHashFromHex(hash))
+	t, release, err := h.app.Acquire(r.Context(), hash)
 	if err != nil {
-		log.Error().Err(err).Msg("track by hash")
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		writeAcquireError(w, hash, err)
 		return
 	}
+	defer release()
 
 	render.Render(w, r, &playlist.PlayList{Torr: t, Whitelist: whitelist, IgnoreTags: ignoretags})
 }
@@ -75,12 +93,12 @@ func (h *handle) magnet(w http.ResponseWriter, r *http.Request) {
 	var whitelist = r.Context().Value(paramWhitelist).(map[string]struct{})
 	var ignoretags = r.Context().Value(paramIgnoretags).(map[string]struct{})
 
-	var t, err = h.app.TrackMagnetContext(r.Context(), magnet)
+	t, release, err := h.app.AcquireMagnet(r.Context(), magnet)
 	if err != nil {
-		log.Error().Err(err).Msg("track by hash")
-		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		writeAcquireError(w, magnet.InfoHash, err)
 		return
 	}
+	defer release()
 
 	render.Render(w, r, &playlist.PlayList{Torr: t, Whitelist: whitelist, IgnoreTags: ignoretags})
 }
@@ -92,19 +110,7 @@ func (h *handle) content(w http.ResponseWriter, r *http.Request) {
 	// 引用计数 + 两段式回收的唯一入口。
 	t, release, err := h.app.Acquire(r.Context(), hash)
 	if err != nil {
-		switch {
-		case errors.Is(err, app.ErrInfoTimeout):
-			log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
-			http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
-
-		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
-			// 客户端已经离开，无需再写响应。
-			log.Debug().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
-
-		default:
-			log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
-			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-		}
+		writeAcquireError(w, hash, err)
 		return
 	}
 	defer release()
