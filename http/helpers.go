@@ -1,7 +1,6 @@
 package http
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -9,56 +8,10 @@ import (
 	"time"
 
 	"github.com/anacrolix/torrent"
-	"github.com/anacrolix/torrent/metainfo"
 	"github.com/rs/zerolog/log"
-
-	"github.com/WinPooh32/peerstohttp/app"
 )
 
 var errFileNotFound = errors.New("file not found")
-
-func addNewTorrentHash(ctx context.Context, app *app.App, hash string) (*torrent.Torrent, bool) {
-	var t, new = app.Client().AddTorrentInfoHash(metainfo.NewHashFromHex(hash))
-
-	if t == nil {
-		return nil, false
-	}
-
-	if new {
-		app.TrackContext(ctx, t)
-	}
-
-	select {
-	case <-ctx.Done():
-		return nil, false
-
-	case <-t.GotInfo():
-	}
-
-	return t, true
-}
-
-func addNewTorrentMagnet(ctx context.Context, app *app.App, magnetURI string) (*torrent.Torrent, bool) {
-	var t, err = app.Client().AddMagnet(magnetURI)
-	if err != nil {
-		return nil, false
-	}
-
-	if t == nil {
-		return nil, false
-	}
-
-	app.TrackContext(ctx, t)
-
-	select {
-	case <-ctx.Done():
-		return nil, false
-
-	case <-t.GotInfo():
-	}
-
-	return t, true
-}
 
 func serveTorrentDir(w http.ResponseWriter, r *http.Request, t *torrent.Torrent, path string) error {
 	var err error

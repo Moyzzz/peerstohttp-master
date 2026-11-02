@@ -12,6 +12,9 @@ type Settings struct {
 	UploadRate      *int
 	MaxConnections  *int
 	CacheCapacity   *int64
+	IdleTTL         *int
+	InfoTimeout     *int
+	KeepMeta        *bool
 	NoDHT           *bool
 	NoUPnP          *bool
 	NoTCP           *bool
@@ -45,6 +48,9 @@ func (s *Settings) parse() {
 		NoIPv6:          flag.Bool("no-ipv6", false, "disable IPv6"),
 		ForceEncryption: flag.Bool("force-encryption", false, "force encryption"),
 		CacheCapacity:   flag.Int64("cache-capacity", 10240, "files cache capacity in MiB\nvalue less then or equal 0 disables cache size controlling"),
+		IdleTTL:         flag.Int("idle-ttl", 90, "seconds to keep an idle torrent before dropping it"),
+		InfoTimeout:     flag.Int("info-timeout", 30, "seconds to wait for torrent metainfo"),
+		KeepMeta:        flag.Bool("keep-meta", true, "keep torrent metainfo in db after an idle torrent is dropped"),
 
 		// Debug
 		JsonLogs:     flag.Bool("json-logs", false, "json logs output"),

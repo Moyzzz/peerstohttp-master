@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/anacrolix/torrent"
 	"github.com/rs/zerolog/log"
@@ -32,8 +33,20 @@ var trackers = [][]string{
 type App struct {
 	client *torrent.Client
 
+	// torrents 是按 infoHash 字符串索引的种子视图（/list 路径与启动加载会写入）。
 	torrents map[string]*torrent.Torrent
-	mu       sync.RWMutex
+	// active 是 /content 路径的引用计数注册表，负责两段式回收。
+	active map[metainfo.Hash]*trackedTorrent
+	mu     sync.RWMutex
+
+	// idleTTL 是 refs 归零后到真正 Drop 之间的宽限期。
+	idleTTL time.Duration
+	// infoTimeout 是等待种子元数据的上限。
+	infoTimeout time.Duration
+	// maxConns 是种子的连接上限，用于阶段一之后的恢复。
+	maxConns int
+	// keepMeta 决定 Drop 之后是否保留数据库中的 metainfo。
+	keepMeta bool
 
 	db *bbolt.DB
 
@@ -77,11 +90,16 @@ func New(service *settings.Settings) (*App, error) {
 	}
 
 	var app = &App{
-		torrents: map[string]*torrent.Torrent{},
-		client:   client,
-		db:       store,
-		tmp:      tmp,
-		cwd:      cwd,
+		torrents:    map[string]*torrent.Torrent{},
+		active:      map[metainfo.Hash]*trackedTorrent{},
+		client:      client,
+		db:          store,
+		tmp:         tmp,
+		cwd:         cwd,
+		idleTTL:     time.Duration(*service.IdleTTL) * time.Second,
+		infoTimeout: time.Duration(*service.InfoTimeout) * time.Second,
+		maxConns:    *service.MaxConnections,
+		keepMeta:    *service.KeepMeta,
 	}
 
 	go func() {
@@ -213,29 +231,35 @@ func (app *App) Close() error {
 }
 
 func (app *App) track(t *torrent.Torrent) error {
-	app.mu.Lock()
-	defer app.mu.Unlock()
-
-	var err error
-	var mi = t.Metainfo()
-	var buf = bytes.NewBuffer(nil)
-
-	err = mi.Write(buf)
-	if err != nil {
-		return fmt.Errorf("write metaInfo: %w", err)
-	}
-
-	err = app.db.Update(func(tx *bbolt.Tx) error {
-		var b = tx.Bucket([]byte(dbBucketInfo))
-		return b.Put(t.InfoHash().Bytes(), buf.Bytes())
-	})
-	if err != nil {
-		return fmt.Errorf("put to db: %w", err)
+	if err := app.persist(t); err != nil {
+		return err
 	}
 
 	t.AddTrackers(trackers)
 
+	app.mu.Lock()
 	app.torrents[t.InfoHash().String()] = t
+	app.mu.Unlock()
+
+	return nil
+}
+
+// persist 把种子的 metainfo 写入数据库。
+// 注意：不持有 app.mu，避免数据库写入阻塞注册表操作。
+func (app *App) persist(t *torrent.Torrent) error {
+	var mi = t.Metainfo()
+	var buf = bytes.NewBuffer(nil)
+
+	if err := mi.Write(buf); err != nil {
+		return fmt.Errorf("write metaInfo: %w", err)
+	}
+
+	if err := app.db.Update(func(tx *bbolt.Tx) error {
+		var b = tx.Bucket([]byte(dbBucketInfo))
+		return b.Put(t.InfoHash().Bytes(), buf.Bytes())
+	}); err != nil {
+		return fmt.Errorf("put to db: %w", err)
+	}
 
 	return nil
 }

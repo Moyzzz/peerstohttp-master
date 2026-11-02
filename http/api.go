@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -84,39 +86,40 @@ func (h *handle) magnet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handle) content(w http.ResponseWriter, r *http.Request) {
-	var err error
-
-	var hash = r.Context().Value(paramHash).(string)
+	var hash = metainfo.NewHashFromHex(r.Context().Value(paramHash).(string))
 	var path = r.Context().Value(paramPath).(string)
 
-	var t, ok = h.app.Client().Torrent(metainfo.NewHashFromHex(hash))
+	// 引用计数 + 两段式回收的唯一入口。
+	t, release, err := h.app.Acquire(r.Context(), hash)
+	if err != nil {
+		switch {
+		case errors.Is(err, app.ErrInfoTimeout):
+			log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
+			http.Error(w, http.StatusText(http.StatusGatewayTimeout), http.StatusGatewayTimeout)
 
-	if !ok {
-		t, ok = addNewTorrentHash(r.Context(), h.app, hash)
-		if !ok {
+		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+			// 客户端已经离开，无需再写响应。
+			log.Debug().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
+
+		default:
+			log.Warn().Err(err).Str("hash", hash.HexString()).Msg("acquire torrent")
 			http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
-			return
 		}
-	}
-
-	select {
-	case <-r.Context().Done():
-		http.Error(w, http.StatusText(http.StatusRequestTimeout), http.StatusRequestTimeout)
 		return
-
-	case <-t.GotInfo():
 	}
+	defer release()
+
+	var serveErr error
 
 	if t.Info().IsDir() && strings.Count(path, "/") == 0 {
-		err = serveTorrentDir(w, r, t, path)
+		serveErr = serveTorrentDir(w, r, t, path)
 	} else {
-		err = serveTorrentFile(w, r, t, path)
+		serveErr = serveTorrentFile(w, r, t, path)
 	}
 
-	if err != nil {
-		log.Warn().Err(err).Msg("serve content")
-		w.WriteHeader(http.StatusInternalServerError)
-		return
+	if serveErr != nil {
+		// ServeContent 可能已经写出响应，这里只记录，避免多余的 WriteHeader。
+		log.Warn().Err(serveErr).Msg("serve content")
 	}
 }
 
