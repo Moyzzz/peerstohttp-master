@@ -3,9 +3,9 @@
 [![FOSSA Status](https://app.fossa.io/api/projects/git%2Bgithub.com%2FWinPooh32%2Fpeerstohttp.svg?type=shield)](https://app.fossa.io/projects/git%2Bgithub.com%2FWinPooh32%2Fpeerstohttp?ref=badge_shield)
 [![Go Report Card](https://goreportcard.com/badge/github.com/WinPooh32/peerstohttp)](https://goreportcard.com/report/github.com/WinPooh32/peerstohttp)
 
-Simple torrent proxy to http stream controlled over REST-like api
+一个简单的种子代理：把 BitTorrent 种子转成 HTTP 流，并通过 REST 风格的 API 控制。
 
-Built top on [anacrolix/torrent](https://github.com/anacrolix/torrent) lib.
+基于 [anacrolix/torrent](https://github.com/anacrolix/torrent) 库构建。
 
 > **本地部署与启动说明见 [DEPLOY.md](DEPLOY.md)**：覆盖 Windows / Linux / Docker Compose 三种方式，含编译依赖、启动参数、验证清单与常见问题排查。
 
@@ -24,61 +24,63 @@ Built top on [anacrolix/torrent](https://github.com/anacrolix/torrent) lib.
 | 文档 | 新增 `DEPLOY.md`：Windows / Linux / Docker 部署手册，含参数速查、验证清单、错误对照表，第 10 章为依赖补丁附录 |
 | 脚本 | 新增 `start.ps1`：Windows 启动脚本，从 `-MingwBin`、`PEERSTOHTTP_MINGW_BIN`、PATH 上的 `gcc`、`CC`、`MSYS2_ROOT` 探测工具链，不再写死路径 |
 | 配置 | 修正 `docker-compose.yml`：镜像名改为小写、去掉 `network_mode: host` 改为端口映射、增加命名卷 |
+| 功能 | `/content` 改为引用计数 + 两段式回收：请求结束立即断开该种子的全部 peer 连接，空闲 90 秒后移除种子记录；新增 `-idle-ttl`、`-info-timeout`、`-keep-meta` 三个参数 |
+| 功能 | 启动时不再把历史种子全量加载进内存，改由 `/content` 与 `/list` 按需创建；`/list` 纳入同一套注册表，元数据超时返回 504 |
 
 ## HTTP API
 
-##### URL Parameters
+##### URL 参数
 
-* **playlist** - output file format, one of these values: `m3u`,`html`,`json`
-* **hash** - torrent info hash. Example: `08ada5a7a6183aae1e09d831df6748d566095a10`
-* **extsWhitelist** - list of whitelisted file extensions. Possible values: "-" (any) or list extension names divided by comma. Examples: "`-`", "`mp3,mp4a`"
-* **tagsBlacklist** - list of blacklisted tags, extracted from file names. Possible values: "-" (no filter) or list tags divided by comma. See /playlist/tags.go for full list of possible tags. Examples: "`-`", "`remix,interview`"
+* **playlist** - 输出文件格式，取值之一：`m3u`、`html`、`json`
+* **hash** - 种子 info hash。示例：`08ada5a7a6183aae1e09d831df6748d566095a10`
+* **extsWhitelist** - 白名单扩展名列表。可选值为 `-`（不限）或以逗号分隔的扩展名列表。示例：`-`、`mp3,mp4a`
+* **tagsBlacklist** - 黑名单标签列表，标签从文件名中提取。可选值为 `-`（不过滤）或以逗号分隔的标签列表。完整可选标签见 `/playlist/tags.go`。示例：`-`、`remix,interview`
 
-Get list of files by magnet uri:
+通过 magnet 链接获取文件列表：
 
 ```
 GET http://localhost/list/{playlist}/{extsWhitelist}/{tagsBlacklist}/magnet/{magnetURI}
 ```
 
-Get list of files by info hash:
+通过 info hash 获取文件列表：
 
 ```
 GET http://localhost/list/{playlist}/{extsWhitelist}/{tagsBlacklist}/hash/{hash}
 ```
 
-Download file:
+下载文件：
 
 ```
 GET http://localhost/content/{hash}/{filePath}
 ```
 
-## Examples
+## 使用示例
 
-Get HTML links list for Sintel by torrent hash:
+通过种子 hash 获取 Sintel 的 HTML 链接列表：
 
 ```
 http://localhost/list/html/mp4/-/hash/08ada5a7a6183aae1e09d831df6748d566095a10
 ```
 
-or by magnet URI:
+或通过 magnet 链接：
 
 ```
 http://localhost/list/html/mp4/-/magnet/magnet:?xt=urn:btih:08ada5a7a6183aae1e09d831df6748d566095a10&dn=Sintel&tr=udp%3A%2F%2Fexplodie.org%3A6969&tr=udp%3A%2F%2Ftracker.coppersurfer.tk%3A6969&tr=udp%3A%2F%2Ftracker.empire-js.us%3A1337&tr=udp%3A%2F%2Ftracker.leechers-paradise.org%3A6969&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337&tr=wss%3A%2F%2Ftracker.btorrent.xyz&tr=wss%3A%2F%2Ftracker.fastcast.nz&tr=wss%3A%2F%2Ftracker.openwebtorrent.com&ws=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2F&xs=https%3A%2F%2Fwebtorrent.io%2Ftorrents%2Fsintel.torrent
 ```
 
-Then watch Sintel.mp4 using VLC video player:
+然后用 VLC 播放 Sintel.mp4：
 
 ```
 vlc http://localhost/content/08ada5a7a6183aae1e09d831df6748d566095a10/Sintel/Sintel.mp4
 ```
 
-Or open m3u playlist in VLC video player:
+或用 VLC 直接打开 m3u 播放列表：
 
 ```
 vlc http://localhost/list/m3u/mp4/-/hash/08ada5a7a6183aae1e09d831df6748d566095a10
 ```
 
-Generate **m3u** files from list of magnets using wget and bash script:
+用 wget 加 bash 脚本从一组 magnet 链接批量生成 **m3u** 文件：
 <details>
   <summary>makelist.sh</summary>
 
@@ -106,52 +108,52 @@ done < $magnets
 
 ## Docker
 
-Run container with exposed 8484 http port:
+启动容器并暴露 HTTP 端口 8484：
 
 ```
 docker run --volume downloads:/downloads -it -p 8484:80 winpooh32/peerstohttp:latest -dir=/downloads
 ```
 
-## Build steps
+## 编译步骤
 
-utp dependency requires C compiler, then install it:  
+uTP 依赖需要 C 编译器，请先安装：
 
-* Windows: download and install <https://jmeubank.github.io/tdm-gcc/download/>
-* Ubuntu linux: `apt install build-essential`
+* Windows：下载并安装 <https://jmeubank.github.io/tdm-gcc/download/>
+* Ubuntu Linux：`apt install build-essential`
 
-Download:
+获取代码：
 
 ```
 go get -v -u github.com/WinPooh32/peerstohttp
 ```
 
-Build in vendor mode:
+以 vendor 模式编译：
 
 ```
 go build -mod=vendor -o peerstohttp
 ```
 
-Install:
+安装：
 
 ```
 go install -i github.com/WinPooh32/peerstohttp/cmd
 ```
 
-Run:
+运行：
 
 ```
 go run github.com/WinPooh32/peerstohttp/cmd -port=8484 -dir="/path/to/download"
 ```
 
-* Usually, $GOPATH is "~/go";
-* Default `dir` value is system tmp folder, for listing all possible options run `$ ./peerstohttp -help`.
+* `$GOPATH` 通常为 `~/go`；
+* `dir` 的默认值是系统临时目录，查看全部可用选项请执行 `./peerstohttp -help`。
 
 ## License
 
 本仓库以 **GNU General Public License v3.0** 发布，完整条款见 [LICENSE](LICENSE)。
 
 - **原始项目**：[WinPooh32/peerstohttp](https://github.com/WinPooh32/peerstohttp)，版权归原作者所有
-- **本仓库**：上游的非官方衍生版本；对上游的修改（vendor 编译补丁、`DEPLOY.md`、`start.ps1`、`docker-compose.yml`）同样以 GPL-3.0 发布
+- **本仓库**：上游的非官方衍生版本；对上游的修改（vendor 编译补丁、`DEPLOY.md`、`start.ps1`、`docker-compose.yml`、种子生命周期管理）同样以 GPL-3.0 发布
 - **同步**：本仓库不保证与上游保持同步
 
 下方徽章反映的是**上游项目**的 FOSSA 扫描状态，不代表本仓库：
