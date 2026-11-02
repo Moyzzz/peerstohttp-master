@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/url"
@@ -120,6 +121,21 @@ func serveContent(w http.ResponseWriter, r *http.Request, size int64, reader tor
 		return err
 	}
 
-	http.ServeContent(w, r, name, time.Now(), reader)
+	http.ServeContent(w, r, name, time.Now(), ctxReadSeeker{Reader: reader, ctx: r.Context()})
 	return nil
+}
+
+// ctxReadSeeker 让底层 torrent.Reader 的读取跟随请求上下文。
+//
+// torrent.Reader.Read 内部固定使用 context.Background()，而 http.ServeContent
+// 只会调用 io.Reader.Read。客户端断开后，阻塞在"等分片"上的读取无法被感知，
+// handler 不返回、引用计数无法归零，种子因此永远不会被两段式回收。
+// 包装一层后，读取改为走 ReadContext(ctx, b)，客户端一断开就立即返回错误。
+type ctxReadSeeker struct {
+	torrent.Reader
+	ctx context.Context
+}
+
+func (c ctxReadSeeker) Read(b []byte) (int, error) {
+	return c.Reader.ReadContext(c.ctx, b)
 }
