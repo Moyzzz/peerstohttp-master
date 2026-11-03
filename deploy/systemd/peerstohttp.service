@@ -60,12 +60,9 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=peerstohttp
-Group=peerstohttp
-WorkingDirectory=/opt/peerstohttp
 
 # 单行写完，避免续行符与 CRLF 混用导致 systemd 解析失败
-ExecStart=/opt/peerstohttp/peerstohttp -host=127.0.0.1 -port=8484 -port-torr=6881 -dir=/var/lib/peerstohttp -cache-capacity=5120 -max-connections=50 -down-rate=8192 -up-rate=512 -no-upnp
+ExecStart=/opt/peerstohttp-master/peerstohttp -host=127.0.0.1 -port=8484 -port-torr=6881 -dir=/var/lib/peerstohttp -cache-capacity=5120 -max-connections=50 --info-timeout=30 -disconnect-ttl=60 -idle-ttl=90 -down-rate=8192 -up-rate=64 -no-upnp
 
 Restart=on-failure
 RestartSec=5s
@@ -82,15 +79,8 @@ LimitNOFILE=65535
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
-ProtectSystem=strict
+ProtectSystem=full
 ProtectHome=true
-ReadWritePaths=/var/lib/peerstohttp
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectControlGroups=true
-RestrictNamespaces=true
-LockPersonality=true
-RestrictSUIDSGID=true
 # 必须带上 AF_NETLINK：Go 运行时会用它枚举网卡，缺了会启动失败
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 
