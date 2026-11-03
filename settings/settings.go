@@ -13,6 +13,7 @@ type Settings struct {
 	MaxConnections  *int
 	CacheCapacity   *int64
 	IdleTTL         *int
+	DisconnectTTL   *int
 	InfoTimeout     *int
 	KeepMeta        *bool
 	NoDHT           *bool
@@ -49,6 +50,7 @@ func (s *Settings) parse() {
 		ForceEncryption: flag.Bool("force-encryption", false, "force encryption"),
 		CacheCapacity:   flag.Int64("cache-capacity", 10240, "files cache capacity in MiB\nvalue less then or equal 0 disables cache size controlling"),
 		IdleTTL:         flag.Int("idle-ttl", 90, "seconds to keep an idle torrent before dropping it"),
+		DisconnectTTL:   flag.Int("disconnect-ttl", 15, "seconds to wait before closing an idle torrent's peer connections, 0 closes immediately"),
 		InfoTimeout:     flag.Int("info-timeout", 30, "seconds to wait for torrent metainfo"),
 		KeepMeta:        flag.Bool("keep-meta", true, "keep torrent metainfo in db after an idle torrent is dropped"),
 

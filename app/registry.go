@@ -34,8 +34,12 @@ type trackedTorrent struct {
 	t        *torrent.Torrent
 	refs     int
 	lastUsed time.Time
-	// evict 是 refs 归零后的宽限定时器。
+	// evict 是 refs 归零后到 Drop 之间的宽限定时器（阶段二）。
 	evict *time.Timer
+	// cut 是 refs 归零后到"断开全部 peer 连接"之间的宽限定时器（阶段一）。
+	// 播放器缓冲满了会主动中止请求、稍后再发新 Range，若一归零就断连，
+	// 每次间隙都要重新拨号，看起来就是"变慢"。
+	cut *time.Timer
 	// capped 表示当前处于"阶段一"：连接上限已被置零。
 	capped bool
 
@@ -84,6 +88,11 @@ func (app *App) acquire(
 		if e.evict != nil {
 			e.evict.Stop()
 			e.evict = nil
+		}
+
+		if e.cut != nil {
+			e.cut.Stop()
+			e.cut = nil
 		}
 
 		// 阶段一可逆：有新请求回来就恢复连接上限，不必重建对象。
@@ -144,7 +153,7 @@ func (app *App) releaseFunc(hash metainfo.Hash) func() {
 	return func() { once.Do(func() { app.release(hash) }) }
 }
 
-// release 减少引用计数；归零时执行阶段一（断连 + 启动宽限定时器）。
+// release 减少引用计数；归零时安排两段式回收。
 func (app *App) release(hash metainfo.Hash) {
 	app.mu.Lock()
 	defer app.mu.Unlock()
@@ -160,18 +169,49 @@ func (app *App) release(hash metainfo.Hash) {
 		return
 	}
 
-	// 阶段一：立即断开全部 peer 连接，保留种子对象与已完成的分片状态。
-	if e.t != nil && !e.capped {
-		e.t.SetMaxEstablishedConns(0)
-		e.capped = true
-
-		log.Info().
-			Str("hash", hash.HexString()).
-			Bool("keep_meta", app.keepMeta).
-			Msg("torrent idle: peer connections closed, waiting for grace period")
+	// 阶段一：宽限 disconnectTTL 后再断开全部 peer 连接。
+	// 播放器缓冲满时会主动中止请求、稍后重发 Range，若一归零就断连，
+	// 每个间隙都要重新拨号与重排分片优先级，表现为"下载变慢"。
+	if e.t != nil && !e.capped && e.cut == nil {
+		if app.disconnectTTL <= 0 {
+			app.cutConnsLocked(e, hash)
+		} else {
+			e.cut = time.AfterFunc(app.disconnectTTL, func() { app.cutConns(hash) })
+		}
 	}
 
+	// 阶段二：空闲 idleTTL 后移除种子记录。
 	e.evict = time.AfterFunc(app.idleTTL, func() { app.drop(hash) })
+}
+
+// cutConns 在宽限期结束后断开全部 peer 连接（阶段一）。
+func (app *App) cutConns(hash metainfo.Hash) {
+	app.mu.Lock()
+	defer app.mu.Unlock()
+
+	e, ok := app.active[hash]
+	if !ok || e.refs > 0 {
+		return
+	}
+
+	e.cut = nil
+
+	if e.t == nil || e.capped {
+		return
+	}
+
+	app.cutConnsLocked(e, hash)
+}
+
+// cutConnsLocked 要求调用方已持有 app.mu。
+func (app *App) cutConnsLocked(e *trackedTorrent, hash metainfo.Hash) {
+	e.t.SetMaxEstablishedConns(0)
+	e.capped = true
+
+	log.Info().
+		Str("hash", hash.HexString()).
+		Bool("keep_meta", app.keepMeta).
+		Msg("torrent idle: peer connections closed, waiting for grace period")
 }
 
 // drop 在宽限期结束后执行阶段二：把种子从 client 与本地索引中移除。
@@ -185,6 +225,11 @@ func (app *App) drop(hash metainfo.Hash) {
 	}
 
 	delete(app.active, hash)
+
+	if e.cut != nil {
+		e.cut.Stop()
+		e.cut = nil
+	}
 
 	// 持锁 Drop：避免"新请求刚拿到指针、旧 goroutine 正在 Drop"的悬垂对象。
 	// 锁顺序始终为 app.mu -> torrent client 内部锁。

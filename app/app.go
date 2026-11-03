@@ -38,6 +38,9 @@ type App struct {
 
 	// idleTTL 是 refs 归零后到真正 Drop 之间的宽限期。
 	idleTTL time.Duration
+	// disconnectTTL 是 refs 归零后到"断开全部 peer 连接"之间的宽限期。
+	// 设为 0 表示立即断连（旧行为）。
+	disconnectTTL time.Duration
 	// infoTimeout 是等待种子元数据的上限。
 	infoTimeout time.Duration
 	// maxConns 是种子的连接上限，用于阶段一之后的恢复。
@@ -87,15 +90,21 @@ func New(service *settings.Settings) (*App, error) {
 	}
 
 	var app = &App{
-		active:      map[metainfo.Hash]*trackedTorrent{},
-		client:      client,
-		db:          store,
-		tmp:         tmp,
-		cwd:         cwd,
-		idleTTL:     time.Duration(*service.IdleTTL) * time.Second,
-		infoTimeout: time.Duration(*service.InfoTimeout) * time.Second,
-		maxConns:    *service.MaxConnections,
-		keepMeta:    *service.KeepMeta,
+		active:        map[metainfo.Hash]*trackedTorrent{},
+		client:        client,
+		db:            store,
+		tmp:           tmp,
+		cwd:           cwd,
+		idleTTL:       time.Duration(*service.IdleTTL) * time.Second,
+		disconnectTTL: time.Duration(*service.DisconnectTTL) * time.Second,
+		infoTimeout:   time.Duration(*service.InfoTimeout) * time.Second,
+		maxConns:      *service.MaxConnections,
+		keepMeta:      *service.KeepMeta,
+	}
+
+	// 断连宽限不应长于空闲淘汰，否则阶段一永远不会发生。
+	if app.disconnectTTL > app.idleTTL {
+		app.disconnectTTL = app.idleTTL
 	}
 
 	go func() {
