@@ -18,6 +18,7 @@
 | [docs/content-streaming.md](docs/content-streaming.md) | 开发者 | 读取链路、读取取消的实现与成因、Range/206、排障日志 |
 | [docs/API.md](docs/API.md) | 接口使用方 | 三个 HTTP 端点、路径参数、响应格式、状态码 |
 | [docs/OPS.md](docs/OPS.md) | 运维 | 启动方式、全部 23 个启动参数、端口与防火墙、验证与排查 |
+| [docs/releases/v0.2.0.md](docs/releases/v0.2.0.md) | 所有人 | v0.2.0 版本说明（最新） |
 | [docs/releases/v0.1.0.md](docs/releases/v0.1.0.md) | 所有人 | v0.1.0 版本说明 |
 
 > **本项目是 [WinPooh32/peerstohttp](https://github.com/WinPooh32/peerstohttp) 的非官方衍生版本（unofficial derivative）**

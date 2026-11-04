@@ -27,6 +27,7 @@
 
 | 版本 | 说明 |
 |---|---|
+| [releases/v0.2.0.md](releases/v0.2.0.md) | HEAD 缓存探测、跨域 HEAD/Range 修复 |
 | [releases/v0.1.0.md](releases/v0.1.0.md) | 首个正式版：种子生命周期管理、读取取消、断连宽限 |
 
 ## 约定
