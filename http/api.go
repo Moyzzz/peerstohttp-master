@@ -4,7 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"mime"
 	"net/http"
+	"net/url"
+	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/anacrolix/torrent/metainfo"
@@ -53,6 +57,7 @@ func RouteApp(r chi.Router, app *app.App) {
 	})
 
 	r.With(hash, path).Get("/content/{"+paramHash+"}/*", h.content)
+	r.With(hash, path).Head("/content/{"+paramHash+"}/*", h.head)
 }
 
 // writeAcquireError 把注册表返回的错误映射成 HTTP 状态码。
@@ -101,6 +106,48 @@ func (h *handle) magnet(w http.ResponseWriter, r *http.Request) {
 	defer release()
 
 	render.Render(w, r, &playlist.PlayList{Torr: t, Whitelist: whitelist, IgnoreTags: ignoretags})
+}
+
+// head 只从缓存（内存 / bolt）回答元数据探测：不创建种子、不连 peer、不下载。
+// 缓存未命中立即返回 503，由客户端决定重试或改用 GET。
+func (h *handle) head(w http.ResponseWriter, r *http.Request) {
+	var hash = metainfo.NewHashFromHex(r.Context().Value(paramHash).(string))
+	var path = r.Context().Value(paramPath).(string)
+
+	info, source, ok := h.app.CachedInfo(hash)
+	if !ok {
+		w.Header().Set("X-Cache", source)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+
+	var name = filepath.Base(path)
+
+	length, ok := infoFileLength(info, path)
+	if !ok {
+		w.Header().Set("X-Cache", source)
+		http.Error(w, http.StatusText(http.StatusNotFound), http.StatusNotFound)
+		return
+	}
+
+	var hdr = w.Header()
+	hdr.Set("X-Cache", source)
+	hdr.Set("Accept-Ranges", "bytes")
+	hdr.Set("Content-Disposition", `filename="`+url.PathEscape(name)+`"`)
+
+	if ct := mime.TypeByExtension(filepath.Ext(name)); ct != "" {
+		hdr.Set("Content-Type", ct)
+	}
+
+	if start, end, ok := parseSingleRange(r.Header.Get("Range"), length); ok {
+		hdr.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, length))
+		hdr.Set("Content-Length", strconv.FormatInt(end-start+1, 10))
+		w.WriteHeader(http.StatusPartialContent)
+		return
+	}
+
+	hdr.Set("Content-Length", strconv.FormatInt(length, 10))
+	w.WriteHeader(http.StatusOK)
 }
 
 func (h *handle) content(w http.ResponseWriter, r *http.Request) {

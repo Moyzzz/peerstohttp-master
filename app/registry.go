@@ -308,6 +308,35 @@ func (app *App) createTorrent(
 	return t, nil
 }
 
+// CachedInfo 只读地查一次元数据缓存：先内存，再 bolt。
+//
+// 返回 (info, 来源, 是否命中)，来源取值 "HIT-MEM" / "HIT-DISK" / "MISS"。
+// 它不会创建种子、不改变引用计数、也不触发任何网络行为，
+// 因此可以安全地用于 HEAD 这类"只探测、不下载"的请求。
+func (app *App) CachedInfo(hash metainfo.Hash) (*metainfo.Info, string, bool) {
+	app.mu.RLock()
+	if e, ok := app.active[hash]; ok && e.t != nil {
+		if info := e.t.Info(); info != nil {
+			app.mu.RUnlock()
+			return info, "HIT-MEM", true
+		}
+	}
+	app.mu.RUnlock()
+
+	mi, ok := app.loadMetaInfo(hash)
+	if !ok {
+		return nil, "MISS", false
+	}
+
+	info, err := mi.UnmarshalInfo()
+	if err != nil {
+		log.Warn().Err(err).Str("hash", hash.HexString()).Msg("unmarshal cached metainfo")
+		return nil, "MISS", false
+	}
+
+	return &info, "HIT-DISK", true
+}
+
 // loadMetaInfo 从数据库读取并解析已缓存的 metainfo。
 func (app *App) loadMetaInfo(hash metainfo.Hash) (*metainfo.MetaInfo, bool) {
 	var raw []byte
