@@ -22,10 +22,23 @@ import (
 
 func newCors(origins []string) *cors.Cors {
 	return cors.New(cors.Options{
-		AllowedOrigins:   origins,
-		AllowedMethods:   []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"},
-		AllowedHeaders:   []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token"},
-		ExposedHeaders:   []string{"Link"},
+		AllowedOrigins: origins,
+		// HEAD 必须显式列出：chi 的 cors 中间件会按方法白名单过滤，
+		// 不在名单里的方法直接不加任何 CORS 头，浏览器就会报跨域错误。
+		AllowedMethods: []string{
+			http.MethodGet,
+			http.MethodHead,
+			http.MethodPost,
+			http.MethodPut,
+			http.MethodDelete,
+			http.MethodPatch,
+			http.MethodOptions,
+		},
+		// Range 不在 CORS 安全列表里，前端用 fetch 带 Range 时会触发预检，
+		// 预检要求这里能匹配上 Access-Control-Request-Headers。
+		AllowedHeaders: []string{"Accept", "Authorization", "Content-Type", "X-CSRF-Token", "Range"},
+		// 让跨域脚本能读到分段与缓存相关的响应头。
+		ExposedHeaders:   []string{"Link", "Content-Range", "Accept-Ranges", "X-Cache"},
 		AllowCredentials: true,
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	})
